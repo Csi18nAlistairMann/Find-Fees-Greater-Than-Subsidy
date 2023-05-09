@@ -1,0 +1,88 @@
+#!/bin/bash
+#
+# Find Fees Greater Than Subsidy
+# Alistair Mann, 07 May 2023
+#
+# A short script to discover Bitcoin blocks where the fees were larger
+# than the subsidy
+#
+# Usage:
+# findfeesgtsubsidy <logfile>
+#
+# If the logfile doesn't already exist it will be created and processing
+# started from Block 1
+# If the log file does exist, processing will continue from where it
+# left off
+#
+
+#
+# Setup
+OUTFILE=$1
+OLDEPOCH=-1
+ORIGSUBSIDY=50
+BLOCKCHAININFO=$(bitcoin-cli getblockchaininfo)
+BLOCKHEIGHT=$(echo $BLOCKCHAININFO | sed 's/.*"blocks": //' | sed 's/,.*//')
+# Stop 6 blocks from current tip to avoid orphans
+SAFEBLOCKHEIGHT=$(($BLOCKHEIGHT - 6))
+
+# Set up logfile or examine from it where to restart
+if [ ! -e $OUTFILE ]; then
+	BLOCK=1 # Genesis not retrievable
+	echo "Block,Median time,Coinbase,Subsidy,Flag" > $OUTFILE
+	if [ $? -eq 1 ]; then
+		echo "Logfile missing or bad, exiting"
+		exit
+	fi
+else
+	LASTBLOCK=$(tail -1 $OUTFILE | sed 's/,.*//')
+	BLOCK=$(($LASTBLOCK + 1))
+fi
+echo "(Re)starting from block $BLOCK"
+
+#
+# Main loop - repeat for each missing block
+while [ $BLOCK -le $SAFEBLOCKHEIGHT ]
+do
+	#
+	# When Epoch changes, recalculate what subsidy should be
+	EPOCH=$(($BLOCK / 210000))
+	if [ $EPOCH -ne $OLDEPOCH ]; then
+		OLDEPOCH=$EPOCH
+		SUBSIDY=$(echo "scale=8; $ORIGSUBSIDY/(2^$EPOCH)" | bc)
+	fi
+
+	#
+	# Retrieve block details inc first transaction
+	BLOCKHASH=$(bitcoin-cli getblockhash $BLOCK)
+	GETBLOCKJSON=$(bitcoin-cli getblock $BLOCKHASH 1)
+	if [ $? -eq -8 ]; then
+		echo "Tried to access unavailable block"
+		exit
+	fi
+	MEDIANTIME=$(echo $GETBLOCKJSON | sed 's/.*"mediantime": //' | sed 's/,.*//')
+	COINBASEHASH=$(echo $GETBLOCKJSON | sed 's/.*"tx": \[ "//' | sed 's/".*//')
+
+	#
+	# From first transaction get the first output - that's the coinbase
+	CBTX=$(bitcoin-cli getrawtransaction $COINBASEHASH true $BLOCKHASH)
+	VALUE=$(echo $CBTX | sed 's/.*"vout": \[ { "value": //' | sed 's/,.*//')
+
+	#
+	# Assess if fees > subsidy
+	DIFF=$(echo "$VALUE > ($SUBSIDY * 2)" | bc)
+	if [ $DIFF == "1" ]; then
+		FLAG="x"
+	else
+		FLAG=""
+	fi
+
+	#
+	# Log result, provide progress indicator, and repeat
+	echo "$BLOCK,$MEDIANTIME,$VALUE,$SUBSIDY,$FLAG" >>$OUTFILE
+	echo -n "."
+	((BLOCK++))
+done
+
+#
+# Close off progress indicator
+echo " - completed."
