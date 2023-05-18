@@ -65,7 +65,7 @@ do
 	#
 	# From first transaction get the first output - that's the coinbase
 	CBTX=$(bitcoin-cli getrawtransaction $COINBASEHASH true $BLOCKHASH)
-	VALUE=$(echo $CBTX | sed 's/.*"vout": \[ { "value": //' | sed 's/,.*//')
+	VALUE=$(echo $CBTX |  grep -oP '"value":\s*\K[^\s,]*(?=\s*,)' | awk '{total+=$1} END{printf("%.8f", total)}')
 
 	#
 	# Assess if fees > subsidy
@@ -79,7 +79,12 @@ do
 	#
 	# Log result, provide progress indicator, and repeat
 	echo "$BLOCK,$MEDIANTIME,$VALUE,$SUBSIDY,$FLAG" >>$OUTFILE
-	echo -n "."
+	PULSE=$((BLOCK & 1023))
+	if [ $PULSE == 0 ]; then
+		echo -n "[$BLOCK]"
+	else
+		echo -n "."
+	fi
 	((BLOCK++))
 done
 
